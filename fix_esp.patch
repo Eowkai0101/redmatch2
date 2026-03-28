@@ -1,0 +1,184 @@
+--- esp.cpp
++++ esp.cpp
+@@ -28,6 +28,10 @@
+ typedef void* (*il2cpp_string_new_t)(const char* str);
+ typedef void* (*il2cpp_type_get_object_t)(void* type);
+ typedef void* (*il2cpp_class_get_type_t)(void* klass);
++typedef void* (*il2cpp_class_get_methods_t)(void* klass, void** iter);
++typedef const char* (*il2cpp_method_get_name_t)(void* method);
++typedef uint32_t (*il2cpp_method_get_param_count_t)(void* method);
++typedef void* (*il2cpp_method_get_param_t)(void* method, uint32_t index);
++typedef void* (*il2cpp_class_from_type_t)(void* type);
+
+ il2cpp_domain_get_t il2cpp_domain_get = nullptr;
+ il2cpp_domain_get_assemblies_t il2cpp_domain_get_assemblies = nullptr;
+@@ -43,6 +47,11 @@
+ il2cpp_string_new_t il2cpp_string_new = nullptr;
+ il2cpp_type_get_object_t il2cpp_type_get_object = nullptr;
+ il2cpp_class_get_type_t il2cpp_class_get_type = nullptr;
++il2cpp_class_get_methods_t il2cpp_class_get_methods = nullptr;
++il2cpp_method_get_name_t il2cpp_method_get_name = nullptr;
++il2cpp_method_get_param_count_t il2cpp_method_get_param_count = nullptr;
++il2cpp_method_get_param_t il2cpp_method_get_param = nullptr;
++il2cpp_class_from_type_t il2cpp_class_from_type = nullptr;
+
+ struct Il2CppArray {
+     void* klass;
+@@ -60,6 +69,8 @@
+ void* objectClass = nullptr;
+ void* timeClass = nullptr;
+ void* behaviourClass = nullptr;
++void* screenClass = nullptr;
++void* typeClass = nullptr;
+
+ // Method caching to improve performance
+ void* get_mainCameraMethod = nullptr;
+@@ -75,6 +86,7 @@
+ void* healthField = nullptr;
+ void* maxHealthField = nullptr;
+ void* hsTypeObj = nullptr;
++void* get_heightMethod = nullptr;
+
+ bool InitIl2cpp() {
+     HMODULE hAssembly = GetModuleHandleA("GameAssembly.dll");
+@@ -93,6 +105,11 @@
+     il2cpp_string_new = (il2cpp_string_new_t)GetProcAddress(hAssembly, "il2cpp_string_new");
+     il2cpp_type_get_object = (il2cpp_type_get_object_t)GetProcAddress(hAssembly, "il2cpp_type_get_object");
+     il2cpp_class_get_type = (il2cpp_class_get_type_t)GetProcAddress(hAssembly, "il2cpp_class_get_type");
++    il2cpp_class_get_methods = (il2cpp_class_get_methods_t)GetProcAddress(hAssembly, "il2cpp_class_get_methods");
++    il2cpp_method_get_name = (il2cpp_method_get_name_t)GetProcAddress(hAssembly, "il2cpp_method_get_name");
++    il2cpp_method_get_param_count = (il2cpp_method_get_param_count_t)GetProcAddress(hAssembly, "il2cpp_method_get_param_count");
++    il2cpp_method_get_param = (il2cpp_method_get_param_t)GetProcAddress(hAssembly, "il2cpp_method_get_param");
++    il2cpp_class_from_type = (il2cpp_class_from_type_t)GetProcAddress(hAssembly, "il2cpp_class_from_type");
+
+     if (!il2cpp_domain_get) return false;
+
+@@ -110,23 +127,51 @@
+         if (!guiClass) guiClass = il2cpp_class_from_name(image, "UnityEngine", "GUI");
+         if (!objectClass) objectClass = il2cpp_class_from_name(image, "UnityEngine", "Object");
+         if (!guiContentClass) guiContentClass = il2cpp_class_from_name(image, "UnityEngine", "GUIContent");
++        if (!screenClass) screenClass = il2cpp_class_from_name(image, "UnityEngine", "Screen");
+         if (!timeClass) timeClass = il2cpp_class_from_name(image, "UnityEngine", "Time");
+         if (!behaviourClass) behaviourClass = il2cpp_class_from_name(image, "UnityEngine", "Behaviour");
++        if (!typeClass) typeClass = il2cpp_class_from_name(image, "System", "Type");
+     }
+
+-    if (!playerControllerClass || !healthSyncerClass || !cameraClass || !guiClass || !guiContentClass || !objectClass || !componentClass)
++    if (!playerControllerClass || !healthSyncerClass || !cameraClass || !guiClass || !guiContentClass || !objectClass || !componentClass || !typeClass)
+         return false;
+
+     // Cache methods and fields
+     get_mainCameraMethod = il2cpp_class_get_method_from_name(cameraClass, "get_main", 0);
+     findObjMethod = il2cpp_class_get_method_from_name(objectClass, "FindObjectsOfType", 1);
+     pcTypeObj = il2cpp_type_get_object(il2cpp_class_get_type(playerControllerClass));
+     localField = il2cpp_class_get_field_from_name(playerControllerClass, "LocalInstance");
+     getTransformMethod = il2cpp_class_get_method_from_name(componentClass, "get_transform", 0);
+-    getComponentMethod = il2cpp_class_get_method_from_name(componentClass, "GetComponent", 1);
++
++    void* iter = nullptr;
++    while (void* method = il2cpp_class_get_methods(componentClass, &iter)) {
++        if (strcmp(il2cpp_method_get_name(method), "GetComponent") == 0 && il2cpp_method_get_param_count(method) == 1) {
++            void* paramType = il2cpp_method_get_param(method, 0);
++            if (il2cpp_class_from_type(paramType) == typeClass) {
++                getComponentMethod = method;
++                break;
++            }
++        }
++    }
++
+     w2sMethod = il2cpp_class_get_method_from_name(cameraClass, "WorldToScreenPoint", 1);
+-    guiLabelMethod = il2cpp_class_get_method_from_name(guiClass, "Label", 2);
++
++    iter = nullptr;
++    while (void* method = il2cpp_class_get_methods(guiClass, &iter)) {
++        if (strcmp(il2cpp_method_get_name(method), "Label") == 0 && il2cpp_method_get_param_count(method) == 2) {
++            void* paramType = il2cpp_method_get_param(method, 1);
++            if (il2cpp_class_from_type(paramType) == guiContentClass) {
++                guiLabelMethod = method;
++                break;
++            }
++        }
++    }
++
+     tempContentMethod = il2cpp_class_get_method_from_name(guiContentClass, "Temp", 1);
+     healthField = il2cpp_class_get_field_from_name(healthSyncerClass, "health");
+     maxHealthField = il2cpp_class_get_field_from_name(healthSyncerClass, "maxHealth");
+     hsTypeObj = il2cpp_type_get_object(il2cpp_class_get_type(healthSyncerClass));
++    get_heightMethod = il2cpp_class_get_method_from_name(screenClass, "get_height", 0);
+
+     return true;
+ }
+@@ -194,7 +239,12 @@
+         if (lt) localPos = GetPosition(lt);
+     }
+
+-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
++    int screenHeight = 1080;
++    if (get_heightMethod) {
++        void* hObj = il2cpp_runtime_invoke(get_heightMethod, nullptr, nullptr, nullptr);
++        // Unboxing int
++        if (hObj) screenHeight = *(int*)((uintptr_t)hObj + 0x10);
++    }
+
+     for (uintptr_t i = 0; i < players->max_length; i++) {
+         void* player = players->vector[i];
+@@ -239,30 +289,28 @@
+         MH_Initialize();
+
+-        // We hook a standard MonoBehaviour method on PlayerController or any component we know fires.
+-        // Let's hook the PlayerController Update or a similar method. But we want OnGUI.
+-        // The safest and easiest generic OnGUI in Unity is on an existing script. Let's look up PlayerController.
+-        // wait, does PlayerController have OnGUI? Let's check or hook Camera::OnGUI, if it exists? Camera is a component but doesn't have OnGUI natively in il2cpp.
+-        // Instead, we will just hook the PlayerController Update and create our own GUI GameObject or use an existing GUI script.
+-        // Actually, `PlayerController` has MonoBehaviour as base. So it can have OnGUI.
+-        // For generic ESP hooks, usually people hook `UnityEngine.GUI::CallWindowDelegate` or `UnityEngine.Event::PopEvent` if they want to render in OnGUI.
+-        // Let's hook the GUI.Label method itself, and inside of it, if it's drawing, we do our drawing once.
+-        // Or even better, we just hook `UnityEngine.GUI::DoLabel`. Let's hook `UnityEngine.Camera::OnPreRender` or `UnityEngine.Camera::FireOnPreRender`.
+-
+-        // As a simpler approach for standard internal Unity hacks, we can find a native MonoBehaviour like `PlayerManager` or `PlayerController` that is likely updated.
+-        // Wait, the user specifically asked for "OnGUI metodu kullan" (use OnGUI method).
+-        // Let's find any OnGUI in the game assembly, or hook a Unity internal function that dispatches OnGUI.
+-        // A common hook target for GUI is "UnityEngine.GUIUtility::BeginGUI"
+-        void* guiUtilityClass = nullptr;
++        void* guiUtilityClass = nullptr;
++        void* eventClass = nullptr;
+         size_t size = 0;
+         void** assemblies = il2cpp_domain_get_assemblies(il2cpp_domain_get(), &size);
+         for (size_t i = 0; i < size; ++i) {
+             void* image = il2cpp_assembly_get_image(assemblies[i]);
+             if (!guiUtilityClass) guiUtilityClass = il2cpp_class_from_name(image, "UnityEngine", "GUIUtility");
++            if (!eventClass) eventClass = il2cpp_class_from_name(image, "UnityEngine", "Event");
+         }
+
+         void* beginGuiMethod = nullptr;
++        void* eventPopMethod = nullptr;
+         if (guiUtilityClass) {
+-            beginGuiMethod = il2cpp_class_get_method_from_name(guiUtilityClass, "BeginGUI", 1);
++            beginGuiMethod = il2cpp_class_get_method_from_name(guiUtilityClass, "BeginGUI", 3);
++        }
++        if (eventClass) {
++            eventPopMethod = il2cpp_class_get_method_from_name(eventClass, "PopEvent", 1);
+         }
+
+-        if (beginGuiMethod) {
+-            // IL2CPP MethodInfo contains methodPointer.
+-            void* methodPointer = *(void**)beginGuiMethod; // MethodInfo->methodPointer is the first element
++        if (eventPopMethod) {
++            void* methodPointer = *(void**)eventPopMethod;
++            MH_CreateHook(methodPointer, (LPVOID)hk_CameraOnGUI, (LPVOID*)&o_CameraOnGUI);
++            MH_EnableHook(methodPointer);
++        } else if (beginGuiMethod) {
++            void* methodPointer = *(void**)beginGuiMethod;
+             MH_CreateHook(methodPointer, (LPVOID)hk_CameraOnGUI, (LPVOID*)&o_CameraOnGUI);
+             MH_EnableHook(methodPointer);
+-        } else {
+-            // Fallback: Hook PlayerController's Update method if OnGUI isn't accessible cleanly
+-            void* pcUpdateMethod = il2cpp_class_get_method_from_name(playerControllerClass, "Update", 0);
+-            if (pcUpdateMethod) {
+-                void* methodPointer = *(void**)pcUpdateMethod;
+-                MH_CreateHook(methodPointer, (LPVOID)hk_CameraOnGUI, (LPVOID*)&o_CameraOnGUI);
+-                MH_EnableHook(methodPointer);
+-            }
+         }
+     }
+     return 0;
