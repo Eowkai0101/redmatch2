@@ -5,7 +5,6 @@
 #include "il2cpp.h"
 #include "minhook/include/MinHook.h"
 
-// Define basic structs needed for Unity
 struct Vector2 { float x, y; };
 struct Vector3 {
     float x, y, z;
@@ -19,7 +18,6 @@ struct Vector3 {
 struct Rect { float m_XMin, m_YMin, m_Width, m_Height; };
 struct Color { float r, g, b, a; };
 
-// Function pointers for IL2CPP
 typedef void* (*il2cpp_domain_get_t)();
 typedef void** (*il2cpp_domain_get_assemblies_t)(void* domain, size_t* size);
 typedef void* (*il2cpp_assembly_get_image_t)(void* assembly);
@@ -80,8 +78,8 @@ void* timeClass = nullptr;
 void* behaviourClass = nullptr;
 void* screenClass = nullptr;
 void* typeClass = nullptr;
+void* eventClass = nullptr;
 
-// Method caching to improve performance
 void* get_mainCameraMethod = nullptr;
 void* findObjMethod = nullptr;
 void* pcTypeObj = nullptr;
@@ -95,6 +93,7 @@ void* healthField = nullptr;
 void* maxHealthField = nullptr;
 void* hsTypeObj = nullptr;
 void* get_heightMethod = nullptr;
+void* get_typeMethod = nullptr;
 
 bool InitIl2cpp() {
     HMODULE hAssembly = GetModuleHandleA("GameAssembly.dll");
@@ -142,12 +141,12 @@ bool InitIl2cpp() {
         if (!timeClass) timeClass = il2cpp_class_from_name(image, "UnityEngine", "Time");
         if (!behaviourClass) behaviourClass = il2cpp_class_from_name(image, "UnityEngine", "Behaviour");
         if (!typeClass) typeClass = il2cpp_class_from_name(image, "System", "Type");
+        if (!eventClass) eventClass = il2cpp_class_from_name(image, "UnityEngine", "Event");
     }
 
-    if (!playerControllerClass || !healthSyncerClass || !cameraClass || !guiClass || !guiContentClass || !objectClass || !componentClass || !typeClass)
+    if (!playerControllerClass || !healthSyncerClass || !cameraClass || !guiClass || !guiContentClass || !objectClass || !componentClass || !typeClass || !eventClass)
         return false;
 
-    // Cache methods and fields
     get_mainCameraMethod = il2cpp_class_get_method_from_name(cameraClass, "get_main", 0);
     findObjMethod = il2cpp_class_get_method_from_name(objectClass, "FindObjectsOfType", 1);
     pcTypeObj = il2cpp_type_get_object(il2cpp_class_get_type(playerControllerClass));
@@ -183,6 +182,7 @@ bool InitIl2cpp() {
     maxHealthField = il2cpp_class_get_field_from_name(healthSyncerClass, "maxHealth");
     hsTypeObj = il2cpp_type_get_object(il2cpp_class_get_type(healthSyncerClass));
     get_heightMethod = il2cpp_class_get_method_from_name(screenClass, "get_height", 0);
+    get_typeMethod = il2cpp_class_get_method_from_name(eventClass, "get_type", 0);
 
     return true;
 }
@@ -193,41 +193,69 @@ Vector3 GetPosition(void* transform) {
     void* getPosMethod = il2cpp_class_get_method_from_name(transformClass, "get_position", 0);
     if(getPosMethod) {
         void* res = il2cpp_runtime_invoke(getPosMethod, transform, nullptr, nullptr);
-        if(res) {
-             pos = *(Vector3*)((uintptr_t)res + 0x10);
-        }
+        if(res) pos = *(Vector3*)((uintptr_t)res + 0x10);
     }
     return pos;
 }
 
 void DrawString(Rect rect, const char* text) {
     if (!guiLabelMethod || !tempContentMethod) return;
-
     void* strObj = il2cpp_string_new(text);
     void* args1[1] = { strObj };
     void* content = il2cpp_runtime_invoke(tempContentMethod, nullptr, args1, nullptr);
-
     void* args2[2] = { &rect, content };
     il2cpp_runtime_invoke(guiLabelMethod, nullptr, args2, nullptr);
 }
 
-// Function pointer and original pointer for our hook
-typedef void (*Camera_OnGUI_t)(void* instance);
-Camera_OnGUI_t o_CameraOnGUI = nullptr;
+// Caching Players to avoid lag
+std::vector<void*> cachedPlayers;
+DWORD lastCacheTime = 0;
 
-void hk_CameraOnGUI(void* instance) {
-    // Call the original method first
-    if (o_CameraOnGUI) o_CameraOnGUI(instance);
+void UpdatePlayerCache() {
+    DWORD currentTime = GetTickCount();
+    if (currentTime - lastCacheTime < 1000) return; // Cache once per second
+    lastCacheTime = currentTime;
 
     if (!findObjMethod || !pcTypeObj) return;
+    void* args[1] = { pcTypeObj };
+    Il2CppArray* players = (Il2CppArray*)il2cpp_runtime_invoke(findObjMethod, nullptr, args, nullptr);
+    if (!players) return;
+
+    cachedPlayers.clear();
+    for (uintptr_t i = 0; i < players->max_length; i++) {
+        if (players->vector[i]) {
+            cachedPlayers.push_back(players->vector[i]);
+        }
+    }
+}
+
+// Hook GUIUtility.BeginGUI
+typedef void (*BeginGUI_t)(int, int, int);
+BeginGUI_t o_BeginGUI = nullptr;
+
+void hk_BeginGUI(int a1, int a2, int a3) {
+    if (o_BeginGUI) o_BeginGUI(a1, a2, a3);
+
+    // Only draw during Repaint event type (EventType.Repaint == 7)
+    if (get_typeMethod) {
+        void* currentEventMethod = il2cpp_class_get_method_from_name(eventClass, "get_current", 0);
+        if (currentEventMethod) {
+            void* currentEv = il2cpp_runtime_invoke(currentEventMethod, nullptr, nullptr, nullptr);
+            if (currentEv) {
+                void* typeObj = il2cpp_runtime_invoke(get_typeMethod, currentEv, nullptr, nullptr);
+                if (typeObj) {
+                    int eventType = *(int*)((uintptr_t)typeObj + 0x10);
+                    if (eventType != 7) return; // Not repaint
+                }
+            }
+        }
+    }
+
+    UpdatePlayerCache();
 
     void* mainCamera = nullptr;
     if (get_mainCameraMethod) mainCamera = il2cpp_runtime_invoke(get_mainCameraMethod, nullptr, nullptr, nullptr);
     if (!mainCamera) return;
-
-    void* args[1] = { pcTypeObj };
-    Il2CppArray* players = (Il2CppArray*)il2cpp_runtime_invoke(findObjMethod, nullptr, args, nullptr);
-    if (!players) return;
 
     void* localPlayer = nullptr;
     if (localField) il2cpp_field_static_get_value(localField, &localPlayer);
@@ -241,12 +269,10 @@ void hk_CameraOnGUI(void* instance) {
     int screenHeight = 1080;
     if (get_heightMethod) {
         void* hObj = il2cpp_runtime_invoke(get_heightMethod, nullptr, nullptr, nullptr);
-        // Unboxing int
         if (hObj) screenHeight = *(int*)((uintptr_t)hObj + 0x10);
     }
 
-    for (uintptr_t i = 0; i < players->max_length; i++) {
-        void* player = players->vector[i];
+    for (void* player : cachedPlayers) {
         if (!player || player == localPlayer) continue;
 
         void* transform = il2cpp_runtime_invoke(getTransformMethod, player, nullptr, nullptr);
@@ -282,38 +308,27 @@ void hk_CameraOnGUI(void* instance) {
 }
 
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    // Wait for the game to fully load before finding methods
     Sleep(5000);
 
     if (InitIl2cpp()) {
         MH_Initialize();
 
         void* guiUtilityClass = nullptr;
-        void* eventClass = nullptr;
         size_t size = 0;
         void** assemblies = il2cpp_domain_get_assemblies(il2cpp_domain_get(), &size);
         for (size_t i = 0; i < size; ++i) {
             void* image = il2cpp_assembly_get_image(assemblies[i]);
             if (!guiUtilityClass) guiUtilityClass = il2cpp_class_from_name(image, "UnityEngine", "GUIUtility");
-            if (!eventClass) eventClass = il2cpp_class_from_name(image, "UnityEngine", "Event");
         }
 
         void* beginGuiMethod = nullptr;
-        void* eventPopMethod = nullptr;
         if (guiUtilityClass) {
             beginGuiMethod = il2cpp_class_get_method_from_name(guiUtilityClass, "BeginGUI", 3);
         }
-        if (eventClass) {
-            eventPopMethod = il2cpp_class_get_method_from_name(eventClass, "PopEvent", 1);
-        }
 
-        if (eventPopMethod) {
-            void* methodPointer = *(void**)eventPopMethod;
-            MH_CreateHook(methodPointer, (LPVOID)hk_CameraOnGUI, (LPVOID*)&o_CameraOnGUI);
-            MH_EnableHook(methodPointer);
-        } else if (beginGuiMethod) {
+        if (beginGuiMethod) {
             void* methodPointer = *(void**)beginGuiMethod;
-            MH_CreateHook(methodPointer, (LPVOID)hk_CameraOnGUI, (LPVOID*)&o_CameraOnGUI);
+            MH_CreateHook(methodPointer, (LPVOID)hk_BeginGUI, (LPVOID*)&o_BeginGUI);
             MH_EnableHook(methodPointer);
         }
     }
