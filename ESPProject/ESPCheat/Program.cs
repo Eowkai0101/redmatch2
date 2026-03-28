@@ -14,8 +14,14 @@ namespace ESPCheat
         static void Main(string[] args)
         {
             Console.WriteLine("[*] Starting External ESP...");
-            Console.Write("[?] Enter the exact game process name (without .exe, e.g., 'csgo'): ");
+            Console.Write("[?] Enter the game process name (e.g., 'csgo' or 'csgo.exe'): ");
             string processName = Console.ReadLine() ?? "GameProcessName";
+
+            // Clean up .exe extension if user provided it
+            if (processName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                processName = processName.Substring(0, processName.Length - 4);
+            }
 
             Console.WriteLine("[*] Press 'Insert' to toggle the menu.");
             Console.WriteLine($"[*] Looking for process: {processName}");
@@ -78,21 +84,36 @@ namespace ESPCheat
         {
             if (!gameFound)
             {
-                // To avoid excessive CPU usage from exceptions in a tight render loop,
-                // we first check if the process is running.
+                // Find process safely to avoid CPU spikes
                 Process[] processes = Process.GetProcessesByName(processName);
                 if (processes.Length > 0)
                 {
                     try
                     {
-                        swed = new Swed(processName);
-                        // For IL2CPP, it is usually GameAssembly.dll. For Mono, it's mono-2.0-bdwgc.dll.
-                        clientBase = swed.GetModuleBase("GameAssembly.dll");
+                        // Some games might have multiple processes with same name, pick the first
+                        Process gameProcess = processes[0];
+                        swed = new Swed(gameProcess.ProcessName);
+
+                        // Try to get module base, if not available (yet), it might throw.
+                        // Often games take a bit to load their DLLs
+                        try
+                        {
+                            clientBase = swed.GetModuleBase("GameAssembly.dll");
+                        }
+                        catch
+                        {
+                            clientBase = 0;
+                            // Fallback for Unity Mono games if GameAssembly.dll is not there
+                            try { clientBase = swed.GetModuleBase("mono-2.0-bdwgc.dll"); } catch { }
+                        }
+
                         gameFound = true;
-                        Console.WriteLine("[+] Game hooked successfully!");
+                        Console.WriteLine($"[+] Game hooked successfully! Process ID: {gameProcess.Id}");
+                        if (clientBase != 0) Console.WriteLine($"[+] Found Base Module at: 0x{clientBase:X}");
                     }
-                    catch
+                    catch (Exception)
                     {
+                        // Silent fail, just wait
                         gameFound = false;
                     }
                 }
@@ -105,6 +126,7 @@ namespace ESPCheat
                 {
                     gameFound = false;
                     swed = null;
+                    clientBase = 0;
                     Console.WriteLine("[-] Game closed. Waiting for it to start again...");
                 }
             }
@@ -163,10 +185,18 @@ namespace ESPCheat
             Vector2 screenSize = ImGui.GetIO().DisplaySize;
             Vector2 screenBottom = new Vector2(screenSize.X / 2, screenSize.Y);
 
-            if (!gameFound || swed == null)
+            // 1. Game not hooked? Show mock data to prove the overlay works.
+            // 2. ClientBase is 0? We hooked the game but don't have actual module loaded (or it's dummy offset).
+            //    We will show mock data alongside so the user knows menu is working, but real ESP is missing valid offsets.
+            if (!gameFound || swed == null || clientBase == 0 || Offsets.EntityList == 0x1234568)
             {
-                // Draw mock data so user can see it works while game is closed
+                // This displays if we haven't found the real entity offsets yet
                 DrawMockData(drawList, screenBottom, screenSize);
+                if (gameFound)
+                {
+                    ImGui.GetForegroundDrawList().AddText(new Vector2(10, 10), ImGui.ColorConvertFloat4ToU32(new Vector4(1, 1, 0, 1)),
+                        "[WARNING] Game Hooked, but Offsets.EntityList is still dummy (0x1234568) or ClientBase is 0. \nReal ESP logic is bypassed. Mock ESP is shown.");
+                }
                 return;
             }
 
@@ -217,7 +247,15 @@ namespace ESPCheat
             }
             catch (Exception)
             {
-                gameFound = false;
+                // Do NOT set gameFound = false here. If an offset is wrong, it throws an AccessViolationException
+                // or similar when trying to ReadPointer. If we set gameFound = false, it keeps looping "Game not found"
+                // despite the process still being open.
+                // Instead, just let it fail silently for this frame, or show an error text.
+                ImGui.GetForegroundDrawList().AddText(new Vector2(10, 40), ImGui.ColorConvertFloat4ToU32(new Vector4(1, 0, 0, 1)),
+                        "[ERROR] Memory Read Exception! Check your Offsets (EntityList, ViewMatrix, etc). Mock data activated.");
+
+                // We draw the mock data so the screen isn't completely empty when offsets are wrong
+                DrawMockData(drawList, screenBottom, screenSize);
             }
         }
 
