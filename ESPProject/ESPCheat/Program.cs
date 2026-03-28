@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using ClickableTransparentOverlay;
 using ImGuiNET;
 using Swed64;
@@ -13,10 +14,13 @@ namespace ESPCheat
         static void Main(string[] args)
         {
             Console.WriteLine("[*] Starting External ESP...");
-            Console.WriteLine("[*] Press 'Insert' to toggle the menu.");
-            Console.WriteLine("[*] Make sure the game is running.");
+            Console.Write("[?] Enter the exact game process name (without .exe, e.g., 'csgo'): ");
+            string processName = Console.ReadLine() ?? "GameProcessName";
 
-            ESPOverlay overlay = new ESPOverlay();
+            Console.WriteLine("[*] Press 'Insert' to toggle the menu.");
+            Console.WriteLine($"[*] Looking for process: {processName}");
+
+            ESPOverlay overlay = new ESPOverlay(processName);
 
             Task.Run(() => overlay.Start().Wait());
 
@@ -27,36 +31,28 @@ namespace ESPCheat
         }
     }
 
-    // Offset definitions based on dump.cs inspection
-    // Note: Dissonance.Integrations.SteamworksP2P.Demo.SteamworksPlayerController
     public static class Offsets
     {
-        // Example offsets mapped from typical IL2CPP GameObjects / Components
-        // These are placeholders since actual memory hunting is required in the real game.
-        // In a real scenario, you iterate the ObjectManager or use a known signature/base pointer.
-        public static nint PlayerList = 0x1234568; // Dummy address for the entity list
-        public static nint PlayerCount = 0x10;
+        // These base offsets are examples of how Unity IL2CPP handles GameObjectManager.
+        // Since we only have the dump for classes and not the base signatures, these are placeholders.
+        // You MUST find the actual ObjectManager / EntityList signature or pointer for your specific game.
+        public static nint EntityList = 0x1234568;
 
-        // SteamworksPlayerController fields derived from dump.cs
-        // private IDissonancePlayer ↈÀÃÁÀÃÂÃÂÂÂÃÀÀÃÃÃÂÂÃÃÃÃÁↈ; // 0x18
-        // private CharacterController ↈÂÃÁÃÁÃÀÁÃÁÂÁÃÀÁÀÁÁÁÂÃÃÁↈ; // 0x20
-        // private Vector3 ↈÁÂÃÃÃÀÂÃÀÃÁÁÁÀÀÃÂÂÂÂÀÁÂↈ; // 0x28
-        // private Quaternion ↈÀÁÃÃÀÂÂÁÃÀÀÂÃÁÃÀÁÂÁÃÃÀÀↈ; // 0x34
-        // private Vector3 ↈÀÂÂÃÁÁÁÃÃÃÃÀÀÂÀÃÁÁÁÃÂÀÁↈ; // 0x44
-        // private Quaternion ↈÃÂÂÃÃÂÀÃÃÃÂÃÂÁÂÃÃÂÂÀÂÀÀↈ; // 0x50
-        // private float ↈÁÃÃÁÂÂÃÃÃÀÃÂÂÀÁÂÂÂÀÃÀÁÁↈ; // 0x60
-        // private bool ↈÃÀÂÁÁÁÁÃÃÁÀÃÁÁÁÁÃÂÂÂÁÂÃↈ; // 0x64
+        // SteamworksPlayerController offsets from dump.cs
+        // private Vector3 ↈÁÂÃÃÃÀÂÃÀÃÁÁÁÀÀÃÂÂÂÂÀÁÂↈ; // 0x28 (Position likely)
+        // private float ↈÁÃÃÁÂÂÃÃÃÀÃÂÂÀÁÂÂÂÀÃÀÁÁↈ; // 0x60 (Health likely)
+        // private bool ↈÃÀÂÁÁÁÁÃÃÁÀÃÁÁÁÁÃÂÂÂÁÂÃↈ; // 0x64 (IsAlive/IsLocalPlayer likely)
+        public static nint Position = 0x28;
+        public static nint Health = 0x60;
+        public static nint IsAlive = 0x64;
 
-        public static nint DissonancePlayer = 0x18;
-        public static nint CharacterController = 0x20;
-        public static nint Vector3Pos1 = 0x28;
-        public static nint Vector3Pos2 = 0x44;
-        public static nint FloatVal = 0x60;
-        public static nint BoolVal = 0x64;
+        // Unity typically stores ViewMatrix in Camera or global UnityPlayer.dll / GameAssembly.dll
+        public static nint ViewMatrix = 0x567890;
     }
 
     class ESPOverlay : Overlay
     {
+        private string processName;
         private bool showMenu = true;
         private bool enableESP = true;
         private bool showBox = true;
@@ -65,28 +61,51 @@ namespace ESPCheat
         private bool showDistance = true;
         private bool showName = true;
 
-        private Vector4 boxColor = new Vector4(1f, 0f, 0f, 1f); // Red
-        private Vector4 snaplineColor = new Vector4(0f, 1f, 0f, 1f); // Green
-        private Vector4 nameColor = new Vector4(1f, 1f, 1f, 1f); // White
+        private Vector4 boxColor = new Vector4(1f, 0f, 0f, 1f);
+        private Vector4 snaplineColor = new Vector4(0f, 1f, 0f, 1f);
+        private Vector4 nameColor = new Vector4(1f, 1f, 1f, 1f);
 
         private Swed? swed;
         private nint clientBase;
         private bool gameFound = false;
 
+        public ESPOverlay(string procName)
+        {
+            processName = procName;
+        }
+
         protected override void Render()
         {
             if (!gameFound)
             {
-                try
+                // To avoid excessive CPU usage from exceptions in a tight render loop,
+                // we first check if the process is running.
+                Process[] processes = Process.GetProcessesByName(processName);
+                if (processes.Length > 0)
                 {
-                    // Hooking to the game process using Swed64
-                    swed = new Swed("GameProcessName");
-                    clientBase = swed.GetModuleBase("GameAssembly.dll");
-                    gameFound = true;
+                    try
+                    {
+                        swed = new Swed(processName);
+                        // For IL2CPP, it is usually GameAssembly.dll. For Mono, it's mono-2.0-bdwgc.dll.
+                        clientBase = swed.GetModuleBase("GameAssembly.dll");
+                        gameFound = true;
+                        Console.WriteLine("[+] Game hooked successfully!");
+                    }
+                    catch
+                    {
+                        gameFound = false;
+                    }
                 }
-                catch
+            }
+            else
+            {
+                // Check if the game was closed
+                Process[] processes = Process.GetProcessesByName(processName);
+                if (processes.Length == 0)
                 {
                     gameFound = false;
+                    swed = null;
+                    Console.WriteLine("[-] Game closed. Waiting for it to start again...");
                 }
             }
 
@@ -112,7 +131,7 @@ namespace ESPCheat
 
             if (!gameFound)
             {
-                ImGui.TextColored(new Vector4(1f, 0f, 0f, 1f), "Game Not Found. Waiting for process...");
+                ImGui.TextColored(new Vector4(1f, 0f, 0f, 1f), $"Game '{processName}.exe' Not Found. Waiting...");
             }
             else
             {
@@ -146,46 +165,94 @@ namespace ESPCheat
 
             if (!gameFound || swed == null)
             {
+                // Draw mock data so user can see it works while game is closed
                 DrawMockData(drawList, screenBottom, screenSize);
                 return;
             }
 
             try
             {
-                // This is the memory reading implementation using the actual offsets
-                // found in dump.cs for the `SteamworksPlayerController` class.
+                // Note: The below logic is a standard structure. Because we lack the EXACT EntityList pointer
+                // and ViewMatrix pointer (which are not in dump.cs but in memory), this will read 0s.
+                // Replace Offsets.EntityList and Offsets.ViewMatrix with actual memory addresses for your game.
 
-                nint entityList = swed.ReadPointer(clientBase + Offsets.PlayerList);
-                int playerCount = swed.ReadInt(clientBase + Offsets.PlayerCount);
+                // Read ViewMatrix (16 floats)
+                float[] viewMatrix = ReadMatrix(clientBase + Offsets.ViewMatrix);
 
-                for (int i = 0; i < playerCount; i++)
+                nint entityList = swed.ReadPointer(clientBase + Offsets.EntityList);
+
+                // Iterate through players (assuming 32 max for this example)
+                for (int i = 0; i < 32; i++)
                 {
-                    nint entity = swed.ReadPointer(entityList + i * 0x8);
+                    nint entity = swed.ReadPointer(entityList + i * 0x8); // Adjust pointer arithmetic based on list structure
                     if (entity == 0) continue;
 
-                    // Read the positions from the SteamworksPlayerController structure
-                    Vector3 worldPos = swed.ReadVec(entity + Offsets.Vector3Pos1);
-                    float healthFloat = swed.ReadFloat(entity + Offsets.FloatVal);
-                    bool isAlive = swed.ReadBool(entity + Offsets.BoolVal);
-
+                    bool isAlive = swed.ReadBool(entity + Offsets.IsAlive);
                     if (!isAlive) continue;
 
-                    // World to screen conversion would happen here
-                    // Vector2 screenPos = WorldToScreen(worldPos, viewMatrix);
-                    // Vector2 headPos = WorldToScreen(worldPos + new Vector3(0, 1.8f, 0), viewMatrix);
+                    Vector3 feetPos = swed.ReadVec(entity + Offsets.Position);
+                    float health = swed.ReadFloat(entity + Offsets.Health);
 
-                    // Since we don't have the view matrix in the dump, we skip actual rendering
-                    // logic inside this block, but this demonstrates reading real offsets.
+                    // Assume player height is ~1.8 units
+                    Vector3 headPos = feetPos + new Vector3(0, 1.8f, 0);
+
+                    Vector2 screenFeet, screenHead;
+
+                    if (WorldToScreen(feetPos, viewMatrix, screenSize, out screenFeet) &&
+                        WorldToScreen(headPos, viewMatrix, screenSize, out screenHead))
+                    {
+                        float height = screenFeet.Y - screenHead.Y;
+                        float width = height / 2f;
+
+                        Vector2 boxMin = new Vector2(screenHead.X - width / 2, screenHead.Y);
+                        Vector2 boxMax = new Vector2(screenFeet.X + width / 2, screenFeet.Y);
+
+                        // Calculate mock distance since we don't have local player position easily
+                        int distance = (int)Vector3.Distance(Vector3.Zero, feetPos);
+                        int healthPct = Math.Clamp((int)health, 0, 100);
+
+                        DrawPlayer(drawList, screenBottom, boxMin, boxMax, $"Enemy_{i}", distance, healthPct);
+                    }
                 }
             }
             catch (Exception)
             {
-                // Process likely closed or read failed
                 gameFound = false;
             }
         }
 
-        // Mock data to visualize the ESP if the game is not running
+        private float[] ReadMatrix(nint address)
+        {
+            if (swed == null) return new float[16];
+            float[] matrix = new float[16];
+            for (int i = 0; i < 16; i++)
+            {
+                matrix[i] = swed.ReadFloat(address + (i * 0x4));
+            }
+            return matrix;
+        }
+
+        private bool WorldToScreen(Vector3 pos, float[] matrix, Vector2 screenSize, out Vector2 screenPos)
+        {
+            screenPos = Vector2.Zero;
+
+            float w = matrix[3] * pos.X + matrix[7] * pos.Y + matrix[11] * pos.Z + matrix[15];
+
+            if (w < 0.01f) return false;
+
+            float x = matrix[0] * pos.X + matrix[4] * pos.Y + matrix[8] * pos.Z + matrix[12];
+            float y = matrix[1] * pos.X + matrix[5] * pos.Y + matrix[9] * pos.Z + matrix[13];
+
+            x /= w;
+            y /= w;
+
+            screenPos.X = (screenSize.X / 2f) * (x + 1f);
+            screenPos.Y = (screenSize.Y / 2f) * (1f - y);
+
+            return true;
+        }
+
+        // Mock data to visualize the ESP if the game is not running or offsets are wrong
         private void DrawMockData(ImDrawListPtr drawList, Vector2 screenBottom, Vector2 screenSize)
         {
             float baseX = screenSize.X / 2;
